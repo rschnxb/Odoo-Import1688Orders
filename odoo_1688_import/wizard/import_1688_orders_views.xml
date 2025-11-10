@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 导入向导表单视图 -->
+    <record id="view_import_1688_orders_form" model="ir.ui.view">
+        <field name="name">import.1688.orders.form</field>
+        <field name="model">import.1688.orders</field>
+        <field name="arch" type="xml">
+            <form string="导入1688采购订单">
+                <header>
+                    <button name="action_import"
+                            string="开始导入"
+                            type="object"
+                            class="oe_highlight"
+                            attrs="{'invisible': [('state', '=', 'done')]}"/>
+                    <button name="action_view_orders"
+                            string="查看采购订单"
+                            type="object"
+                            class="oe_highlight"
+                            attrs="{'invisible': [('state', '=', 'draft')]}"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group attrs="{'invisible': [('state', '=', 'done')]}">
+                            <field name="excel_file" filename="file_name" widget="binary"/>
+                            <field name="file_name" invisible="1"/>
+                        </group>
+                    </group>
+
+                    <group attrs="{'invisible': [('state', '=', 'draft')]}">
+                        <field name="import_summary" nolabel="1" widget="text"/>
+                    </group>
+
+                    <div attrs="{'invisible': [('state', '=', 'done')]}" class="oe_grey">
+                        <p>
+                            <strong>使用说明：</strong>
+                        </p>
+                        <ol>
+                            <li>从1688下载采购订单Excel文件</li>
+                            <li>点击上方"选择文件"按钮上传Excel文件</li>
+                            <li>点击"开始导入"按钮进行导入</li>
+                            <li>系统将自动：
+                                <ul>
+                                    <li>创建或匹配供应商</li>
+                                    <li>创建或匹配产品</li>
+                                    <li>创建采购订单</li>
+                                </ul>
+                            </li>
+                        </ol>
+                        <p>
+                            <strong>注意事项：</strong>
+                        </p>
+                        <ul>
+                            <li>确保Excel文件格式与1688标准导出格式一致</li>
+                            <li>如果供应商或产品不存在，系统会自动创建</li>
+                            <li>已存在的供应商将根据公司名称进行匹配</li>
+                            <li>已存在的产品将根据货号或SKU ID进行匹配</li>
+                        </ul>
+                    </div>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- 导入向导动作 -->
+    <record id="action_import_1688_orders" model="ir.actions.act_window">
+        <field name="name">导入1688采购订单</field>
+        <field name="res_model">import.1688.orders</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="context">{}</field>
+    </record>
+
+</odoo>

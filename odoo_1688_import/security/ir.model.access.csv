@@ -1,0 +1,3 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_import_1688_orders_user,import.1688.orders.user,model_import_1688_orders,purchase.group_purchase_user,1,1,1,1
+access_import_1688_orders_manager,import.1688.orders.manager,model_import_1688_orders,purchase.group_purchase_manager,1,1,1,1
