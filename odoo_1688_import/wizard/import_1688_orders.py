@@ -155,24 +155,17 @@ class Import1688Orders(models.TransientModel):
                     'order_line': [],
                 }
 
-                # 计算价格调整比例（处理折扣/涨价）
-                price_adjustment_ratio = self._calculate_price_adjustment(order_data)
-
                 # 创建订单行
                 for line_data in order_data['lines']:
                     # 获取或创建产品
                     product = self._get_or_create_product(line_data)
 
-                    # 计算调整后的单价（考虑折扣/涨价）
-                    original_price = float(line_data['unit_price']) if line_data['unit_price'] else 0.0
-                    adjusted_price = original_price * price_adjustment_ratio
-
-                    # 准备订单行数据
+                    # 准备订单行数据（直接使用Excel中的单价）
                     line_vals = {
                         'product_id': product.id,
                         'name': line_data['product_name'],
                         'product_qty': float(line_data['quantity']) if line_data['quantity'] else 1.0,
-                        'price_unit': adjusted_price,
+                        'price_unit': float(line_data['unit_price']) if line_data['unit_price'] else 0.0,
                         'date_planned': fields.Datetime.now(),
                         'taxes_id': [(6, 0, [])],  # 清空税率
                     }
@@ -221,42 +214,6 @@ class Import1688Orders(models.TransientModel):
                 })
 
         return created_orders
-
-    def _calculate_price_adjustment(self, order_data):
-        """
-        计算价格调整比例（处理折扣/涨价）
-
-        逻辑：
-        - 货品理论总价 = sum(单价 * 数量)
-        - 实付款 = order_data['actual_payment']
-        - 运费 = order_data['shipping_fee']
-        - 货品实际总价 = 实付款 - 运费
-        - 价格调整比例 = 货品实际总价 / 货品理论总价
-        """
-        # 计算货品理论总价
-        theoretical_total = 0.0
-        for line_data in order_data['lines']:
-            unit_price = float(line_data['unit_price']) if line_data['unit_price'] else 0.0
-            quantity = float(line_data['quantity']) if line_data['quantity'] else 0.0
-            theoretical_total += unit_price * quantity
-
-        # 如果理论总价为0，返回1（不调整）
-        if theoretical_total == 0:
-            return 1.0
-
-        # 计算货品实际总价（实付款 - 运费）
-        actual_payment = float(order_data['actual_payment']) if order_data['actual_payment'] else 0.0
-        shipping_fee = float(order_data['shipping_fee']) if order_data['shipping_fee'] else 0.0
-        actual_goods_total = actual_payment - shipping_fee
-
-        # 计算价格调整比例
-        adjustment_ratio = actual_goods_total / theoretical_total if theoretical_total > 0 else 1.0
-
-        _logger.info(f"订单 {order_data['order_no']} 价格调整: 理论总价={theoretical_total:.2f}, "
-                    f"实付款={actual_payment:.2f}, 运费={shipping_fee:.2f}, "
-                    f"货品实际总价={actual_goods_total:.2f}, 调整比例={adjustment_ratio:.4f}")
-
-        return adjustment_ratio
 
     def _get_or_create_shipping_product(self):
         """获取或创建运费产品"""
