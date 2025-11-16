@@ -24,6 +24,7 @@
                         <group attrs="{'invisible': [('state', '=', 'done')]}">
                             <field name="excel_file" filename="file_name" widget="binary"/>
                             <field name="file_name" invisible="1"/>
+                            <field name="currency_id" options="{'no_create': True, 'no_open': True}"/>
                         </group>
                     </group>
 
@@ -38,6 +39,7 @@
                         <ol>
                             <li>从1688下载采购订单Excel文件</li>
                             <li>点击上方"选择文件"按钮上传Excel文件</li>
+                            <li>选择采购订单货币（默认为人民币CNY）</li>
                             <li>点击"开始导入"按钮进行导入</li>
                             <li>系统将自动：
                                 <ul>

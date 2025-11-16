@@ -21,11 +21,21 @@ class Import1688Orders(models.TransientModel):
 
     excel_file = fields.Binary(string='Excel文件', required=True)
     file_name = fields.Char(string='文件名')
+    currency_id = fields.Many2one('res.currency', string='货币', required=True,
+                                   default=lambda self: self._get_default_currency())
     import_summary = fields.Text(string='导入摘要', readonly=True)
     state = fields.Selection([
         ('draft', '草稿'),
         ('done', '完成'),
     ], default='draft', string='状态')
+
+    def _get_default_currency(self):
+        """获取默认货币（人民币）"""
+        cny = self.env['res.currency'].search([('name', '=', 'CNY')], limit=1)
+        if cny:
+            return cny.id
+        # 如果找不到人民币，使用公司默认货币
+        return self.env.company.currency_id.id
 
     def action_import(self):
         """导入1688订单"""
@@ -149,6 +159,7 @@ class Import1688Orders(models.TransientModel):
                 # 准备采购订单数据
                 po_vals = {
                     'partner_id': partner.id,
+                    'currency_id': self.currency_id.id,
                     'date_order': order_data['create_date'] if isinstance(order_data['create_date'], datetime) else fields.Datetime.now(),
                     'origin': f"1688-{order_data['order_no']}",
                     'notes': self._generate_notes(order_data),
