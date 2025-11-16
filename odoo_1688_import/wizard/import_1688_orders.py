@@ -163,6 +163,7 @@ class Import1688Orders(models.TransientModel):
                     'currency_id': self.currency_id.id,
                     'date_order': order_data['create_date'] if isinstance(order_data['create_date'], datetime) else fields.Datetime.now(),
                     'origin': f"1688-{order_data['order_no']}",
+                    'partner_ref': order_data['order_no'],  # 供应商参考（Vendor Reference）
                     'notes': self._generate_notes(order_data),
                     'order_line': [],
                 }
