@@ -130,6 +130,7 @@ class Import1688Orders(models.TransientModel):
                     'product_code': self._get_cell_value(row[22]),   # 货号
                     'model': self._get_cell_value(row[23]),         # 型号
                     'sku_id': self._get_cell_value(row[25]),        # SKU ID
+                    'odoo_product_ref': self._get_cell_value(row[26]),  # Odoo 商品编号 (AA列)
                 }
                 orders_dict[order_no]['lines'].append(line_data)
 
@@ -166,54 +167,82 @@ class Import1688Orders(models.TransientModel):
                     'order_line': [],
                 }
 
+                # 计算运费分摊比例
+                shipping_fee = float(order_data['shipping_fee']) if order_data['shipping_fee'] else 0.0
+                total_amount = 0.0
+                for line_data in order_data['lines']:
+                    unit_price = float(line_data['unit_price']) if line_data['unit_price'] else 0.0
+                    quantity = float(line_data['quantity']) if line_data['quantity'] else 0.0
+                    total_amount += unit_price * quantity
+
+                # 用于记录跳过的产品行
+                skipped_lines = []
+
                 # 创建订单行
                 for line_data in order_data['lines']:
-                    # 获取或创建产品
-                    product = self._get_or_create_product(line_data)
+                    # 根据Odoo商品编号匹配产品
+                    product_result = self._find_product_by_reference(line_data)
 
-                    # 准备订单行数据（直接使用Excel中的单价）
+                    if not product_result['found']:
+                        # 产品不存在，记录跳过的行
+                        skipped_lines.append({
+                            'product_name': line_data['product_name'],
+                            'odoo_ref': line_data.get('odoo_product_ref', ''),
+                            'reason': product_result['message']
+                        })
+                        continue
+
+                    product = product_result['product']
+
+                    # 计算含运费的单价
+                    unit_price = float(line_data['unit_price']) if line_data['unit_price'] else 0.0
+                    quantity = float(line_data['quantity']) if line_data['quantity'] else 0.0
+
+                    # 按比例分摊运费到单价
+                    if total_amount > 0 and shipping_fee > 0:
+                        line_amount = unit_price * quantity
+                        shipping_allocation = (line_amount / total_amount) * shipping_fee
+                        unit_price_with_shipping = unit_price + (shipping_allocation / quantity if quantity > 0 else 0)
+                    else:
+                        unit_price_with_shipping = unit_price
+
+                    # 准备订单行数据
                     line_vals = {
                         'product_id': product.id,
                         'name': line_data['product_name'],
-                        'product_qty': float(line_data['quantity']) if line_data['quantity'] else 1.0,
-                        'price_unit': float(line_data['unit_price']) if line_data['unit_price'] else 0.0,
+                        'product_qty': quantity,
+                        'price_unit': unit_price_with_shipping,
                         'date_planned': fields.Datetime.now(),
                         'taxes_id': [(6, 0, [])],  # 清空税率
                     }
                     po_vals['order_line'].append((0, 0, line_vals))
 
-                # 添加运费行（如果有运费）
-                shipping_fee = float(order_data['shipping_fee']) if order_data['shipping_fee'] else 0.0
-                if shipping_fee > 0:
-                    shipping_product = self._get_or_create_shipping_product()
-                    shipping_line_vals = {
-                        'product_id': shipping_product.id,
-                        'name': '运费',
-                        'product_qty': 1.0,
-                        'price_unit': shipping_fee,
-                        'date_planned': fields.Datetime.now(),
-                        'taxes_id': [(6, 0, [])],  # 清空税率
-                    }
-                    po_vals['order_line'].append((0, 0, shipping_line_vals))
-
                 # 创建采购订单
                 if po_vals['order_line']:
                     purchase_order = PurchaseOrder.create(po_vals)
-                    created_orders.append({
+                    result_data = {
                         'order_no': order_data['order_no'],
                         'po_id': purchase_order.id,
                         'po_name': purchase_order.name,
                         'partner_name': partner.name,
                         'amount_total': purchase_order.amount_total,
                         'status': 'success',
-                    })
+                    }
+                    # 如果有跳过的产品行，添加警告信息
+                    if skipped_lines:
+                        result_data['skipped_lines'] = skipped_lines
+                        result_data['status'] = 'partial'  # 部分成功
+                    created_orders.append(result_data)
                     _logger.info(f"成功创建采购订单: {purchase_order.name} (1688订单号: {order_data['order_no']})")
+                    if skipped_lines:
+                        _logger.warning(f"订单 {order_data['order_no']} 有 {len(skipped_lines)} 个产品行被跳过")
                 else:
                     _logger.warning(f"订单 {order_data['order_no']} 没有有效的订单行，跳过")
                     created_orders.append({
                         'order_no': order_data['order_no'],
                         'status': 'skipped',
-                        'message': '没有有效的订单行',
+                        'message': '没有有效的订单行' + (f"，{len(skipped_lines)}个产品缺少Odoo商品编号" if skipped_lines else ''),
+                        'skipped_lines': skipped_lines if skipped_lines else None,
                     })
 
             except Exception as e:
@@ -226,31 +255,40 @@ class Import1688Orders(models.TransientModel):
 
         return created_orders
 
-    def _get_or_create_shipping_product(self):
-        """获取或创建运费产品"""
+    def _find_product_by_reference(self, line_data):
+        """
+        根据Odoo商品编号查找产品
+        返回: {'found': bool, 'product': product对象或None, 'message': str}
+        """
         Product = self.env['product.product']
 
-        # 查找名为"运费"的服务类型产品
-        shipping_product = Product.search([
-            ('name', '=', '运费'),
-            ('type', '=', 'service'),
+        odoo_ref = line_data.get('odoo_product_ref', '')
+
+        # 如果Odoo商品编号为空，返回错误
+        if not odoo_ref:
+            return {
+                'found': False,
+                'product': None,
+                'message': 'Excel中Odoo商品编号(AA列)为空，需要手动关联产品'
+            }
+
+        # 根据Internal Reference (default_code)查找产品
+        product = Product.search([
+            ('default_code', '=', odoo_ref)
         ], limit=1)
 
-        # 如果找不到，创建一个
-        if not shipping_product:
-            product_vals = {
-                'name': '运费',
-                'default_code': 'SHIPPING-FEE',
-                'type': 'service',
-                'purchase_ok': True,
-                'sale_ok': False,
-                'categ_id': self.env.ref('product.product_category_all').id,
-                'description': '1688订单运费',
+        if product:
+            return {
+                'found': True,
+                'product': product,
+                'message': ''
             }
-            shipping_product = Product.create(product_vals)
-            _logger.info(f"创建运费产品: {shipping_product.name}")
-
-        return shipping_product
+        else:
+            return {
+                'found': False,
+                'product': None,
+                'message': f'在Odoo系统中未找到Internal Reference为"{odoo_ref}"的产品，请先创建该产品或检查编号'
+            }
 
     def _get_or_create_partner(self, company_name, member_name):
         """获取或创建供应商"""
@@ -276,41 +314,6 @@ class Import1688Orders(models.TransientModel):
             _logger.info(f"创建新供应商: {partner.name}")
 
         return partner
-
-    def _get_or_create_product(self, line_data):
-        """获取或创建产品"""
-        Product = self.env['product.product']
-
-        # 尝试根据产品编码查找
-        product = False
-        if line_data['product_code']:
-            product = Product.search([
-                ('default_code', '=', line_data['product_code'])
-            ], limit=1)
-
-        # 如果找不到，尝试根据SKU ID查找
-        if not product and line_data['sku_id']:
-            product = Product.search([
-                ('default_code', '=', line_data['sku_id'])
-            ], limit=1)
-
-        # 如果还是找不到，创建新产品
-        if not product:
-            # 生成产品编码
-            default_code = line_data['product_code'] or line_data['sku_id'] or f"1688-{self.env['ir.sequence'].next_by_code('product.product') or '00000'}"
-
-            product_vals = {
-                'name': line_data['product_name'],
-                'default_code': default_code,
-                'type': 'product',
-                'purchase_ok': True,
-                'sale_ok': True,
-                'description_purchase': f"型号: {line_data['model'] or '无'}\nSKU ID: {line_data['sku_id'] or '无'}",
-            }
-            product = Product.create(product_vals)
-            _logger.info(f"创建新产品: {product.name} [{product.default_code}]")
-
-        return product
 
     def _generate_notes(self, order_data):
         """生成订单备注"""
@@ -347,22 +350,39 @@ class Import1688Orders(models.TransientModel):
         """生成导入摘要"""
         total = len(created_orders)
         success = len([o for o in created_orders if o['status'] == 'success'])
+        partial = len([o for o in created_orders if o['status'] == 'partial'])
         skipped = len([o for o in created_orders if o['status'] == 'skipped'])
         failed = len([o for o in created_orders if o['status'] == 'error'])
 
         summary = f"导入完成！\n\n"
         summary += f"总计: {total} 个订单\n"
-        summary += f"成功: {success} 个\n"
-        summary += f"跳过: {skipped} 个\n"
+        summary += f"完全成功: {success} 个\n"
+        summary += f"部分成功: {partial} 个（有产品行被跳过）\n"
+        summary += f"完全跳过: {skipped} 个\n"
         summary += f"失败: {failed} 个\n\n"
 
+        # 显示完全成功的订单
         if success > 0:
-            summary += "成功导入的订单:\n"
+            summary += "完全成功导入的订单:\n"
             summary += "-" * 80 + "\n"
             for order in created_orders:
                 if order['status'] == 'success':
                     summary += f"  • {order['po_name']} - {order['partner_name']} - ¥{order['amount_total']:.2f}\n"
                     summary += f"    (1688订单号: {order['order_no']})\n"
+
+        # 显示部分成功的订单（有跳过的产品行）
+        if partial > 0:
+            summary += "\n部分成功的订单（含跳过的产品行）:\n"
+            summary += "-" * 80 + "\n"
+            for order in created_orders:
+                if order['status'] == 'partial':
+                    summary += f"  • {order['po_name']} - {order['partner_name']} - ¥{order['amount_total']:.2f}\n"
+                    summary += f"    (1688订单号: {order['order_no']})\n"
+                    if 'skipped_lines' in order and order['skipped_lines']:
+                        summary += f"    ⚠️  跳过了 {len(order['skipped_lines'])} 个产品行:\n"
+                        for skipped_line in order['skipped_lines']:
+                            summary += f"       - {skipped_line['product_name']}\n"
+                            summary += f"         原因: {skipped_line['reason']}\n"
 
         if failed > 0:
             summary += "\n失败的订单:\n"
@@ -373,12 +393,25 @@ class Import1688Orders(models.TransientModel):
                     summary += f"    错误: {order['message']}\n"
 
         if skipped > 0:
-            summary += "\n跳过的订单:\n"
+            summary += "\n完全跳过的订单:\n"
             summary += "-" * 80 + "\n"
             for order in created_orders:
                 if order['status'] == 'skipped':
                     summary += f"  • 1688订单号: {order['order_no']}\n"
                     summary += f"    原因: {order['message']}\n"
+                    if 'skipped_lines' in order and order['skipped_lines']:
+                        summary += f"    跳过的产品行:\n"
+                        for skipped_line in order['skipped_lines']:
+                            summary += f"       - {skipped_line['product_name']}\n"
+                            summary += f"         原因: {skipped_line['reason']}\n"
+
+        # 添加提示信息
+        if partial > 0 or skipped > 0:
+            summary += "\n" + "=" * 80 + "\n"
+            summary += "⚠️  重要提示：\n"
+            summary += "有产品行因为缺少Odoo商品编号或编号不存在而被跳过。\n"
+            summary += "请在Excel文件的AA列（Odoo 商品编号）中填写正确的产品Internal Reference，\n"
+            summary += "或者在Odoo系统中创建对应的产品后重新导入。\n"
 
         return summary
 
